@@ -72,11 +72,6 @@ from ansible.module_utils.common.text.converters import to_text
 
 API_BASE = "https://api.uptimerobot.com/v2/"
 
-API_ACTIONS = dict(
-    status='getMonitors?',
-    editMonitor='editMonitor?'
-)
-
 API_FORMAT = 'json'
 API_NOJSONCALLBACK = 1
 CHANGED_STATE = False
@@ -89,6 +84,7 @@ class uptimeRobot(object):
         
         # initialize class
         self.changed = False
+        self.failed = False
 
         self.module = module
         self.params = params
@@ -99,32 +95,53 @@ class uptimeRobot(object):
             'ping': 3,
             'port': 4,
         }
-        self.ur_statuses = {
-            'present': 1,
-            'paused': 0,
-            'absent': 0,
-        }
 
-    def _up_get_monitors(self):
-        
-        # 
-        
+
+    def _return(self):
+
+        # This data will be returned
+
+        data = {}
+        data['changed'] = self.changed
+        if hasattr(self, 'msg'): data['msg'] = self.msg
+        if hasattr(self, 'failed'): data['failed'] = self.failed
+
+        return data
+    
+
+    def _up_make_api_call(self, url, data):
+
+        # Status code for rate limit: 429
         headers = {
                     'content-type': "application/x-www-form-urlencoded",
                     'cache-control': "no-cache"
                   }
-        #data = "api_key="+self.apikey+"&format=json&logs=1"
+
+        resp, info = fetch_url(self.module,
+                               url,
+                               headers=headers,
+                               data=urlencode(data),
+                               method='POST')
+        
+        # Check HTTP status
+        if resp.status != 200:
+            self.failed = True
+            self.msg = f'HTTP Status {resp.status} - {resp.reason}'
+        
+        return resp, info
+
+
+    def _up_get_monitors(self):
+        
+        # Used to fetch a list of all monitors
+        
         data = {
             'api_key': self.params['apikey'],
             'format': 'json',
             'logs': '1',
         }
 
-        resp, info = fetch_url(self.module,
-                               API_BASE+'getMonitors',
-                               headers=headers,
-                               data=urlencode(data),
-                               method='POST')
+        resp, info = self._up_make_api_call(API_BASE+'getMonitors', data)
         
         return resp
     
@@ -133,40 +150,31 @@ class uptimeRobot(object):
 
         # This method allows for editing of an existing monitor.
 
-        headers = {
-                    'content-type': "application/x-www-form-urlencoded",
-                    'cache-control': "no-cache"
-                  }
         data = {
             'api_key': self.params['apikey'],
             'format': 'json',
         }
-        payload = "api_key=enterYourAPIKeyHere&format=json&id=777712827&friendly_name=newFriendlyName"
 
         # Add monitor specific data
         data['id'] = self.current_monitor['id'] # Required
         data['friendly_name'] = self.params['name']
-        data['status'] = self.ur_statuses[self.params['state']]
+        data['status'] = 1 if self.params['state'] == 'present' else 0
 
-        resp, info = fetch_url(self.module,
-                               API_BASE+'editMonitor',
-                               headers=headers,
-                               data=urlencode(data),
-                               method='POST')
+        # Send REST request
+        resp, info = self._up_make_api_call(API_BASE+'editMonitor', data)
 
         self.changed = True
+        self.msg = 'Existing monitor updated.'
+
+        return resp
 
 
     def _up_new_monitor(self):
 
         # Create a new monitor
 
-        headers = {
-                    'content-type': "application/x-www-form-urlencoded",
-                    'cache-control': "no-cache"
-                  }
         data = {
-            'api_key': self.apikey,
+            'api_key': self.params['apikey'],
             'format': 'json',
         }
 
@@ -174,18 +182,31 @@ class uptimeRobot(object):
         data['friendly_name'] = self.params['name']
         data['url'] = self.params['url']
         data['type'] = self.ur_types[self.params['type']] # <- This resolves the type id
-        #data['sub_type'] = self.params['sub_type'] if 'sub_type' in self.params else None
-        #data['port'] = self.params['port'] if 'port' in self.params else None
-        #data['keyword_type'] = self.params['keyword_type'] if 'keyword_type' in self.params else None
-        #data['keyword_value'] = self.params['keyword_value'] if 'keyword_value' in self.params else None
         # TODO: add support for more data
 
-        resp, info = fetch_url(self.module,
-                               API_BASE+'newMonitor',
-                               headers=headers,
-                               data=urlencode(data),
-                               method='POST')
+        resp, info = self._up_make_api_call(API_BASE+'newMonitor', data)
         
+        self.changed = True
+        self.msg = 'New monitor created.'
+        
+        return resp
+    
+    
+    def _up_delete_monitor(self):
+
+        # Delete a monitor
+
+        data = {
+            'api_key': self.params['apikey'],
+            'id': self.current_monitor['id'], # Required
+            'format': 'json',
+        }
+
+        resp, info = self._up_make_api_call(API_BASE+'deleteMonitor', data)
+        
+        self.changed = True
+        self.msg = 'Monitor deleted.'
+
         return resp
 
 
@@ -194,6 +215,7 @@ class uptimeRobot(object):
         # This will get a list of all monitors and then parse the data into the class instance object.
     
         current_monitors = self._up_get_monitors()
+        if self.failed: return
         data = json.loads(current_monitors.read().decode('utf-8'))
 
         # Loop through the list of monitors and check unique criteria
@@ -202,14 +224,9 @@ class uptimeRobot(object):
             if monitor['type'] == self.ur_types[self.params['type']] and monitor['url'] == self.params['url']
         ]
 
-        #print(json.dumps(self.matched_monitors))
-        self.current_monitor = self.matched_monitors[0]
-        
-        
+        if len(self.matched_monitors) > 0:
+            self.current_monitor = self.matched_monitors[0]
 
-        #monitors = list(filter(lambda monitor: monitor['friendly_name'] == friendly_name, data['monitors']))
-        #self.current_monitor = monitors[0] if monitors else None
-        
 
     def ensure_monitor(self):
         
@@ -218,92 +235,60 @@ class uptimeRobot(object):
         # If a monitor already exists, then get that data
         self._find_monitor()
 
-        #
-        # - CONDITIONS FOR CREATING A NEW MONITOR -
-        #
-        # Since "type" cannot be edited on a monitor, we need to create a new monitor if the type does in dead change.
-        if len(self.matched_monitors) == 0:
-            resp = self._up_new_monitor()
-            if resp.status == '200':
-                self.changed = True
-                return json.dumps({'changed': self.changed})
-        #check_diff_new = [
-        #    {
-        #        'proposed_monitor': self.ur_types[self.type],
-        #        'current_monitor': self.current_monitor['type'],
-        #    },
-        #]
-        #for diff in check_diff_new:
-        #    if diff['proposed_monitor'] != diff['current_monitor']:
-        #        if self._up_new_monitor().status == '200':
-        #            self.changed = True
+        if self.failed: return self._return()
 
+        if self.params['state'] == 'present':
 
+            #
+            # - CONDITIONS FOR CREATING A NEW MONITOR -
+            #
+            # Since "type" cannot be edited on a monitor, we need to create a new monitor if the type does in dead change.
+            if len(self.matched_monitors) == 0:
+                resp = self._up_new_monitor()
+                if resp.status == '200':
+                    self.changed = True
+                    return self._return()
 
-        #
-        # - CONDITIONS FOR EDITING AN EXISTING MONITOR -
-        #
-        check_diff_edit = [
-            {
-                'proposed_monitor': self.ur_statuses[self.params['state']],
-                'current_monitor': self.current_monitor['status'],
-            },
-        ]
-        for diff in check_diff_edit:
-
-            if diff['proposed_monitor'] != diff['current_monitor']:
-
-                # The proposed monitor is different and needs to be altered.
+            #
+            # - CONDITIONS FOR EDITING AN EXISTING MONITOR -
+            #
+            if self.current_monitor['status'] == 0:
                 self._up_edit_monitor()
+        
+        elif self.params['state'] == 'paused':
 
-        return json.dumps({'changed': self.changed})
+            #
+            # - CONDITIONS FOR CREATING A NEW MONITOR -
+            #
+            # Since "type" cannot be edited on a monitor, we need to create a new monitor if the type does in dead change.
+            if len(self.matched_monitors) == 0:
+                resp = self._up_new_monitor()
+                if resp.status == '200':
+                    self.changed = True
+                    return self._return()
+
+            #
+            # - CONDITIONS FOR EDITING AN EXISTING MONITOR -
+            #
+            if self.current_monitor['status'] != 0:
+                self._up_edit_monitor()
+        
+        elif len(self.matched_monitors) != 0:
+            
+            self._up_delete_monitor()
+
+        return self._return()
 
 
 
         
-
-
-def checkID(module, params):
-
-    data = urlencode(params)
-    full_uri = API_BASE + API_ACTIONS['status'] + data
-    req, info = fetch_url(module, full_uri)
-    result = to_text(req.read())
-    jsonresult = json.loads(result)
-    req.close()
-    return jsonresult
-
-
-def startMonitor(module, params):
-
-    params['monitorStatus'] = 1
-    data = urlencode(params)
-    full_uri = API_BASE + API_ACTIONS['editMonitor'] + data
-    req, info = fetch_url(module, full_uri)
-    result = to_text(req.read())
-    jsonresult = json.loads(result)
-    req.close()
-    return jsonresult['stat']
-
-
-def pauseMonitor(module, params):
-
-    params['monitorStatus'] = 0
-    data = urlencode(params)
-    full_uri = API_BASE + API_ACTIONS['editMonitor'] + data
-    req, info = fetch_url(module, full_uri)
-    result = to_text(req.read())
-    jsonresult = json.loads(result)
-    req.close()
-    return jsonresult['stat']
-
 
 def main():
 
     module = AnsibleModule(
         argument_spec=dict(
             apikey=dict(required=True, type=str, no_log=True),
-            state=dict(required=False, type=str, default='present', choices=['present', 'absent']),
+            state=dict(required=False, type=str, default='present', choices=['present', 'absent', 'paused']),
             name=dict(required=True, type=str),
             type=dict(required=False, type=str, default='http', choices=['http', 'keyword', 'ping', 'port']),
             url=dict(required=True, type=str),
@@ -330,31 +315,10 @@ def main():
     )
 
     uR = uptimeRobot(module, params)
-    resp = uR._up_get_monitors()
-
     ur_return = uR.ensure_monitor()
 
-    print(ur_return)
+    module.exit_json(**ur_return)
 
-    module.exit_json(changed=True, **ur_return)
-
-    #check_result = checkID(module, params)
-#
-    #if check_result['stat'] != "ok":
-    #    module.fail_json(
-    #        msg="failed",
-    #        result=check_result['message']
-    #    )
-#
-    #if module.params['state'] == 'started':
-    #    monitor_result = startMonitor(module, params)
-    #else:
-    #    monitor_result = pauseMonitor(module, params)
-#
-    #module.exit_json(
-    #    msg="success",
-    #    result=monitor_result
-    #)
 
 
 if __name__ == '__main__':
