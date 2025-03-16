@@ -8,13 +8,15 @@ from __future__ import absolute_import, division, print_function
 __metaclass__ = type
 
 
-# TODO: re-write documentation
+
 DOCUMENTATION = r"""
 module: uptimerobot
-short_description: Pause and start Uptime Robot monitoring
+short_description: Create, update and delete Uptime Robot Monitoring
 description:
-  - This module lets you start and pause Uptime Robot Monitoring.
-author: "Nate Kingsley (@nate-kingsley)"
+  - This module allows you to interact with the Uptime Robot API, to create, update and delete monitors.
+author:
+  - "Nate Kingsley (@nate-kingsley)"
+  - "Josef Dahlström (@gurfin)"
 requirements:
   - Valid Uptime Robot API Key
 extends_documentation_fragment:
@@ -25,21 +27,32 @@ attributes:
   diff_mode:
     support: none
 options:
-  state:
-    type: str
-    description:
-      - Define whether or not the monitor should be running or paused.
-    required: true
-    choices: ["started", "paused"]
-  monitorid:
-    type: str
-    description:
-      - ID of the monitor to check.
-    required: true
   apikey:
     type: str
     description:
       - Uptime Robot API key.
+    required: true
+  state:
+    type: str
+    description:
+      - Define that intended state of a monitor. All states but the "absent" state will create/update the monitor.
+    required: true
+    choices: ["present", "paused", "absent"]
+  name:
+    type: str
+    description:
+      - This allows you to set a name for the monitor, which will be translated to Uptime Robots "friendly_name".
+    required: true
+  type:
+    type: str
+    description:
+      - The type will define what type of monitor you want to configure.
+    choices: ["http", "keyword", "ping", "port"]
+    required: true
+  url:
+    type: str
+    description:
+      - This is the target URL, FQDN or IP that you wish to monitor. 
     required: true
 notes:
   - Support for adding and removing monitors and alert contacts has not yet been implemented.
@@ -47,17 +60,21 @@ notes:
 
 # TODO: re-write examples
 EXAMPLES = r"""
-- name: Pause the monitor with an ID of 12345
+- name: Initiate ICMP monitoring of dn42 node
   community.general.uptimerobot:
-    monitorid: 12345
-    apikey: 12345-1234512345
-    state: paused
+    apikey: <api-key>
+    state: present
+    name: Monitor dn42 node - sestoclu1
+    type: ping
+    url: sestoclu1.dn42.gurfin.se
 
-- name: Start the monitor with an ID of 12345
+- name: Pause ICMP monitoring of dn42 node
   community.general.uptimerobot:
-    monitorid: 12345
-    apikey: 12345-1234512345
-    state: started
+    apikey: <api-key>
+    state: paused
+    name: Monitor dn42 node - sestoclu1
+    type: ping
+    url: sestoclu1.dn42.gurfin.se
 """
 
 # TODO: write a section for responses
